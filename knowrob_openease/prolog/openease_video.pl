@@ -177,7 +177,6 @@ publish_background(T) :-
   video_interface(V),
   jpl_call(V, 'publishBackground', [T], _).
 
-
 %publish_background(DBObj) :-
 %  jpl_ref_to_type(DBObj,  class([com,mongodb],['BasicDBObject'])),
 %  video_interface(V),

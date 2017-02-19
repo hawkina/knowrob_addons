@@ -33,7 +33,8 @@
     [
         publish_marker_id/1,
         publish_command/1,
-        save_canvas_latest/3
+        save_canvas_latest/3,
+        check_object_inside_polygon/2
     ]).
 :- use_module(library('semweb/rdf_db')).
 :- use_module(library('semweb/rdfs')).
@@ -84,4 +85,18 @@ publish_command(Cmd) :-
 save_canvas_latest(Base64, Path, CompletePath) :-
   sherpa_interface(S),
   jpl_call(S, 'saveCanvasLatest', [Base64, Path], CompletePath).
+
+check_object_inside_polygon(Object, Polygon) :-
+  object_dimensions(Object, ObjDepth, ObjWidth, ObjHeight),
+  object_dimensions(Polygon, PlyDepth, PlyWidth, PlyHeight),
+  current_object_pose(Object, [ObjX,ObjY,ObjZ,ObjQW,ObjQX,ObjQY,ObjQZ]),
+  current_object_pose(Polygon, [PlX,PlY,PlZ,PlQW,PlQX,PlQY,PlQZ]),
+
+  >=( (ObjX - 0.5*ObjDepth), (PlX - 0.5*PlDepth)-0.05), =<( (ObjX + 0.5*ObjDepth),  (PlX + 0.5*PlDepth)+0.05 ),
+  >=( (ObjY - 0.5*ObjWidth), (PlY - 0.5*PlWidth)-0.05 ), =<( (ObjY + 0.5*ObjWidth), (PlY + 0.5*PlWidth)+0.05 ),
+  >=( (ObjZ - 0.5*ObjHeight), (PlZ - 0.5*PlHeight)-0.05 ), =<( (ObjZ + 0.5*ObjHeight), (PlZ + 0.5*PlHeight)+0.05 ).
+
+  %owl_individual_of(ObjectPerc, knowrob:'SemanticMapPerception'),
+  %rdf_has(ObjectPerc, knowrob:'objectActedOn', Object),
+  
 
