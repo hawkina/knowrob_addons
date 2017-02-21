@@ -34,7 +34,8 @@
         publish_marker_id/1,
         publish_command/1,
         save_canvas_latest/3,
-        check_object_inside_polygon/2
+        check_object_inside_polygon/2,
+        transform_latest_z_axis_down/3
     ]).
 :- use_module(library('semweb/rdf_db')).
 :- use_module(library('semweb/rdfs')).
@@ -88,7 +89,7 @@ save_canvas_latest(Base64, Path, CompletePath) :-
 
 check_object_inside_polygon(Object, Polygon) :-
   object_dimensions(Object, ObjDepth, ObjWidth, ObjHeight),
-  object_dimensions(Polygon, PlyDepth, PlyWidth, PlyHeight),
+  object_dimensions(Polygon, PlDepth, PlWidth, PlHeight),
   current_object_pose(Object, [ObjX,ObjY,ObjZ,ObjQW,ObjQX,ObjQY,ObjQZ]),
   current_object_pose(Polygon, [PlX,PlY,PlZ,PlQW,PlQX,PlQY,PlQZ]),
 
@@ -99,4 +100,27 @@ check_object_inside_polygon(Object, Polygon) :-
   %owl_individual_of(ObjectPerc, knowrob:'SemanticMapPerception'),
   %rdf_has(ObjectPerc, knowrob:'objectActedOn', Object),
   
+transform_latest_z_axis_down(Target, SourceFrame, Out) :-
+  mongo_interface(DB),
+  jpl_call(DB, 'lookupTransform', [Target, SourceFrame], StampedTransform),
+  % Make sure transform is not null!
+  not( jpl_null(StampedTransform) ),
+
+  TimeInt is 0,
+
+  Z = [-1,0,0,0,0,1,0,0,0,0,-1,-1,0,0,0,1],
+  knowrob_coordinates:list_to_matrix4d(Z, Z_Matrix),
+  jpl_new('tfjava.Stamped', [Z_Matrix, SourceFrame, TimeInt], Z_Stamped),
+
+  knowrob_coordinates:list_to_matrix4d([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1], MatrixOut),
+  % create intermediate matrix 
+  jpl_new('tfjava.Stamped', [MatrixOut, '/', TimeInt], Out_Stamped),
+
+  jpl_call(Z_Stamped, 'getData', [], Z_Data),
+  jpl_call(Out_Stamped, 'getData', [], Out_Data),
+
+  jpl_call(StampedTransform, 'transformPose', [Z_Data, Out_Data], _),
+
+  jpl_call(Out_Stamped, 'getData', [], TransformMatrix4d),
+  knowrob_coordinates:matrix4d_to_list(TransformMatrix4d, Out).  
 
