@@ -298,8 +298,7 @@ event_class(EventInstance, ClassUri) :-
 %  @param Task Identifier of given Task
 % 
 task(Task) :-
-    rdf_has(Task, rdf:type, A),
-    rdf_reachable(A, rdfs:subClassOf, knowrob:'CRAMEvent').
+    rdf_has(Task, rdf:type, A).
 
 %% task(?Task, ?Timepoint) is nondet.
 %

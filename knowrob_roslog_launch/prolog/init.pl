@@ -43,3 +43,4 @@
 :- register_ros_package(knowrob_map_tools).
 :- register_ros_package(knowrob_openease).
 :- register_ros_package(knowrob_rsg).
+:- register_ros_package(sherpa_world).

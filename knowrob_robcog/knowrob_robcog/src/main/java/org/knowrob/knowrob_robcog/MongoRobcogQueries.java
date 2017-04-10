@@ -1256,5 +1256,485 @@ public class MongoRobcogQueries {
 		} catch (IOException e) {
 		}
 	}
+
+    /*****************************************/
+    /*                 EEG                   */
+    /*****************************************/
+
+    /**
+     * Query the EEG value at the given timepoint (or the most recent one)
+     */ 
+    public double GetEEGValueAt(int channelNr,  String timestampStr){
+        // transform the knowrob time to double with 3 decimal precision
+        final double timestamp = (double) Math.round(parseTime_d(timestampStr) * 1000) / 1000;
+
+        return GetEEGValueAt(channelNr, timestamp);
+    }
+
+    public double GetEEGValueAt(int channelNr, double timestamp){
+        // EEG channel name
+        final String eeg_channel_path = "eeg.c" + Integer.toString(channelNr);
+
+        // $and list for querying the $match in the aggregation
+        BasicDBList time_and_channel = new BasicDBList();
+
+        // add the timestamp and the actor name
+        time_and_channel.add(new BasicDBObject(eeg_channel_path, new BasicDBObject("$exists", true)));
+        time_and_channel.add(new BasicDBObject("timestamp", new BasicDBObject("$lte", timestamp)));
+
+        // create the pipeline operations, first the $match
+        DBObject match_time_and_channel = new BasicDBObject(
+                "$match", new BasicDBObject( "$and", time_and_channel)); 
+
+                // sort the results in descending order on the timestamp (keep most recent result first)
+        DBObject sort_desc = new BasicDBObject(
+                "$sort", new BasicDBObject("timestamp", -1));
+
+        // $limit the result to 1, we only need one pose
+        DBObject limit_result = new BasicDBObject("$limit", 1);
+
+        // build the $projection operation
+        DBObject proj_fields = new BasicDBObject("_id", 0);
+        proj_fields.put("timestamp", 1);
+        proj_fields.put("eeg", "$" + eeg_channel_path);        
+        DBObject project = new BasicDBObject("$project", proj_fields);
+
+        // run aggregation
+        List<DBObject> pipeline = Arrays.asList(match_time_and_channel, sort_desc, limit_result, project);
+        
+        AggregationOptions aggregationOptions = AggregationOptions.builder()
+                .batchSize(100)
+                .outputMode(AggregationOptions.OutputMode.CURSOR)
+                .allowDiskUse(true)
+                .build();
+
+        // get results
+        Cursor cursor = this.MongoRobcogConn.coll.aggregate(pipeline, aggregationOptions);
+
+        // if query has a response, return the pose
+        if(cursor.hasNext())
+        {
+            // get the first document as the next cursor and append the metadata to it
+            BasicDBObject first_doc = (BasicDBObject) cursor.next();            
+            // close cursor
+            cursor.close();
+            // get the pose
+            return first_doc.getDouble("eeg");
+        }
+        else
+        {
+            System.out.println("Java - GetEEGValueAt - No results found, returning empty list..");           
+            return 0;
+        }
+    }
+
+
+    /**
+     * Query the values of the EEG channel between the timestamps
+     */
+    public double[] GetEEGValues(int channelNr,
+            String start,
+            String end,
+            double deltaT){
+        // transform the knowrob time to double with 3 decimal precision
+        final double start_ts = (double) Math.round(parseTime_d(start) * 1000) / 1000;
+        final double end_ts = (double) Math.round(parseTime_d(end) * 1000) / 1000;
+        
+        // EEG channel name
+        final String eeg_channel_path = "eeg.c" + Integer.toString(channelNr);
+
+        // $and list for querying the $match in the aggregation
+        BasicDBList time_and_channel = new BasicDBList();
+
+        // add the timestamp and the actor name
+        time_and_channel.add(new BasicDBObject(eeg_channel_path, new BasicDBObject("$exists", true)));
+        time_and_channel.add(new BasicDBObject("timestamp", new BasicDBObject("$gte", start_ts).append("$lte", end_ts)));
+
+        // create the pipeline operations, first the $match
+        DBObject match_time_and_channel = new BasicDBObject(
+                "$match", new BasicDBObject( "$and", time_and_channel)); 
+
+                // sort the results in descending order on the timestamp (keep most recent result first)
+        DBObject sort_inc = new BasicDBObject(
+                "$sort", new BasicDBObject("timestamp", 1));
+
+
+        // build the $projection operation
+        DBObject proj_fields = new BasicDBObject("_id", 0);
+        proj_fields.put("timestamp", 1);
+        proj_fields.put("eeg", "$" + eeg_channel_path);        
+        DBObject project = new BasicDBObject("$project", proj_fields);
+
+        // run aggregation
+        List<DBObject> pipeline = Arrays.asList(match_time_and_channel, sort_inc, project);
+
+        AggregationOptions aggregationOptions = AggregationOptions.builder()
+                .batchSize(100)
+                .outputMode(AggregationOptions.OutputMode.CURSOR)
+                .allowDiskUse(true)
+                .build();
+
+        // get results
+        Cursor cursor = this.MongoRobcogConn.coll.aggregate(pipeline, aggregationOptions);
+        
+        // Traj as dynamic array
+        ArrayList<Double> traj_list = new ArrayList<Double>();
+        
+        // if the query returned nothing, get the most recent pose
+        if(!cursor.hasNext())
+        {
+            System.out.println("Java - GetEEGValues - No results found, returning most recent pose..");
+            // get the most recent pose
+            traj_list.add(this.GetEEGValueAt(channelNr, start));
+            
+            // cast from dynamic array to standard array
+            // java does not support this, has to be Double (as class)
+            //return traj_list.toArray(new double[traj_list.size()]);  
+            double[] traj_arr = new double[traj_list.size()];
+            for (int i = 0; i < traj_list.size(); i++) {
+                traj_arr[i] = traj_list.get(i);                // java 1.5+ style (outboxing)
+            }
+            return traj_arr;
+        }
+        
+        // timestamp used for deltaT
+        double prev_ts = 0;
+                
+        // while query has a response, return the pose
+        while(cursor.hasNext())
+        {
+            // get the first document as the next cursor and append the metadata to it
+            BasicDBObject curr_doc = (BasicDBObject) cursor.next();
+            
+            // get the curr timestamp
+            double curr_ts = curr_doc.getDouble("timestamp");
+            
+            // if time diff > then deltaT add position to trajectory
+            if(curr_ts - prev_ts > deltaT)
+            {           
+                // get the current pose
+                traj_list.add(curr_doc.getDouble("eeg"));
+                prev_ts = curr_ts;
+                //System.out.println(curr_doc.toString());
+            }
+        }
+        // close cursor
+        cursor.close();     
+        
+        // cast from dynamic array to standard array
+        // java does not support this, has to be Double (as class)
+        //return traj_list.toArray(new double[traj_list.size()]);  
+        double[] traj_arr = new double[traj_list.size()];
+        for (int i = 0; i < traj_list.size(); i++) {
+            traj_arr[i] = traj_list.get(i);                // java 1.5+ style (outboxing)
+        }
+        return traj_arr;
+    }
+
+	// ======================== ALL EEG Channels ============================
+
+    /**
+     * Query the all channel EEG values at the given timepoint (or the most recent one)
+     */ 
+    public double[] GetAllEEGValuesAt(String timestampStr){
+        // transform the knowrob time to double with 3 decimal precision
+        final double timestamp = (double) Math.round(parseTime_d(timestampStr) * 1000) / 1000;
+
+        return GetAllEEGValuesAt(timestamp);
+    }
+
+    public double[] GetAllEEGValuesAt(double timestamp){
+        // $and list for querying the $match in the aggregation
+        BasicDBList time_and_channel = new BasicDBList();
+
+        // add the timestamp and the actor name
+        time_and_channel.add(new BasicDBObject("eeg", new BasicDBObject("$exists", true)));
+        time_and_channel.add(new BasicDBObject("timestamp", new BasicDBObject("$lte", timestamp)));
+
+        // create the pipeline operations, first the $match
+        DBObject match_time_and_channel = new BasicDBObject(
+                "$match", new BasicDBObject( "$and", time_and_channel)); 
+
+                // sort the results in descending order on the timestamp (keep most recent result first)
+        DBObject sort_desc = new BasicDBObject(
+                "$sort", new BasicDBObject("timestamp", -1));
+
+        // $limit the result to 1, we only need one pose
+        DBObject limit_result = new BasicDBObject("$limit", 1);
+
+        // build the $projection operation
+        DBObject proj_fields = new BasicDBObject("_id", 0);
+        proj_fields.put("timestamp", 1);
+        proj_fields.put("eeg", "$eeg");        
+        DBObject project = new BasicDBObject("$project", proj_fields);
+
+        // run aggregation
+        List<DBObject> pipeline = Arrays.asList(match_time_and_channel, sort_desc, limit_result, project);
+        
+        AggregationOptions aggregationOptions = AggregationOptions.builder()
+                .batchSize(100)
+                .outputMode(AggregationOptions.OutputMode.CURSOR)
+                .allowDiskUse(true)
+                .build();
+
+        // get results
+        Cursor cursor = this.MongoRobcogConn.coll.aggregate(pipeline, aggregationOptions);
+
+		// if query has a response, return the pose
+		if(cursor.hasNext())
+		{
+			// get the first document as the next cursor and append the metadata to it
+			BasicDBObject first_doc = (BasicDBObject) cursor.next();			
+			// close cursor
+			cursor.close();
+
+			// get all the channels // TODO hardcoded
+			return new double[] {
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c1"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c2"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c3"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c4"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c5"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c6"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c7"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c8"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c9"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c10"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c11"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c12"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c13"),
+					((BasicDBObject) first_doc.get("eeg")).getDouble("c14")};
+		}
+		else
+		{
+			System.out.println("Java - GetAllEEGValuesAt - No results found, returning empty list..");			
+			return new double[0];
+		}
+    }
+
+
+    /**
+     * Query the values of all the EEG channels between the timestamps
+     */
+    public double[][][] GetAllEEGValues(String start,
+            String end,
+            double deltaT){
+        // transform the knowrob time to double with 3 decimal precision
+        final double start_ts = (double) Math.round(parseTime_d(start) * 1000) / 1000;
+        final double end_ts = (double) Math.round(parseTime_d(end) * 1000) / 1000;
+
+        // $and list for querying the $match in the aggregation
+        BasicDBList time_and_channel = new BasicDBList();
+
+        // add the timestamp and the actor name
+        time_and_channel.add(new BasicDBObject("eeg", new BasicDBObject("$exists", true)));
+        time_and_channel.add(new BasicDBObject("timestamp", new BasicDBObject("$gte", start_ts).append("$lte", end_ts)));
+
+        // create the pipeline operations, first the $match
+        DBObject match_time_and_channel = new BasicDBObject(
+                "$match", new BasicDBObject( "$and", time_and_channel)); 
+
+                // sort the results in descending order on the timestamp (keep most recent result first)
+        DBObject sort_inc = new BasicDBObject(
+                "$sort", new BasicDBObject("timestamp", 1));
+
+
+        // build the $projection operation
+        DBObject proj_fields = new BasicDBObject("_id", 0);
+        proj_fields.put("timestamp", 1);
+        proj_fields.put("eeg", "$eeg");        
+        DBObject project = new BasicDBObject("$project", proj_fields);
+
+        // run aggregation
+        List<DBObject> pipeline = Arrays.asList(match_time_and_channel, sort_inc, project);
+
+        AggregationOptions aggregationOptions = AggregationOptions.builder()
+                .batchSize(100)
+                .outputMode(AggregationOptions.OutputMode.CURSOR)
+                .allowDiskUse(true)
+                .build();
+
+        // get results
+        Cursor cursor = this.MongoRobcogConn.coll.aggregate(pipeline, aggregationOptions);
+        
+		// Traj as dynamic array
+		ArrayList<double[][]> eeg_channels_values = new ArrayList<double[][]>();
+
+		ArrayList<double[]> timestap_values_list = new ArrayList<double[]>();
+		
+		// if the query returned nothing, get the most recent pose
+		if(!cursor.hasNext())
+		{
+			System.out.println("Java - GetAllEEGValues - No results found, returning most recent pose..");
+			// get the most recent pose
+			//eeg_channels_values.add(this.GetAllEEGValuesAt(start));
+			
+			// cast from dynamic array to standard array
+			//return eeg_channels_values.toArray(new double[eeg_channels_values.size()][2][14]);
+			return new double[0][0][0];
+		}
+		
+		// timestamp used for deltaT
+		double prev_ts = 0;
+		
+		ArrayList<Double> c1 = new ArrayList<Double>();
+		ArrayList<Double> c2 = new ArrayList<Double>();
+		ArrayList<Double> c3 = new ArrayList<Double>();
+		ArrayList<Double> c4 = new ArrayList<Double>();
+		ArrayList<Double> c5 = new ArrayList<Double>();
+		ArrayList<Double> c6 = new ArrayList<Double>();
+		ArrayList<Double> c7 = new ArrayList<Double>();
+		ArrayList<Double> c8 = new ArrayList<Double>();
+		ArrayList<Double> c9 = new ArrayList<Double>();
+		ArrayList<Double> c10 = new ArrayList<Double>();
+		ArrayList<Double> c11 = new ArrayList<Double>();
+		ArrayList<Double> c12 = new ArrayList<Double>();
+		ArrayList<Double> c13 = new ArrayList<Double>();
+		ArrayList<Double> c14 = new ArrayList<Double>();
+		
+		// while query has a response, return the pose
+		while(cursor.hasNext())
+		{
+			// get the first document as the next cursor and append the metadata to it
+			BasicDBObject curr_doc = (BasicDBObject) cursor.next();
+			
+			// get the curr timestamp
+			double curr_ts = curr_doc.getDouble("timestamp");
+			
+			// if time diff > then deltaT add position to trajectory
+			if(curr_ts - prev_ts > deltaT)
+			{				
+				c1.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c1"));
+				c2.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c2"));
+				c3.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c3"));
+				c4.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c4"));
+				c5.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c5"));
+				c6.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c6"));
+				c7.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c7"));
+				c8.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c8"));
+				c9.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c9"));
+				c10.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c10"));
+				c11.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c11"));
+				c12.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c12"));
+				c13.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c13"));
+				c14.add(((BasicDBObject) curr_doc.get("eeg")).getDouble("c14"));
+
+				prev_ts = curr_ts;
+			}
+		}
+
+		double[] ts_arr = new double[]{start_ts, end_ts, deltaT};
+
+        // cast from dynamic array to standard array
+        // java does not support this, has to be Double (as class)
+        //return traj_list.toArray(new double[traj_list.size()]);  
+        double[] c1_arr = new double[c1.size()];
+        double[] c2_arr = new double[c2.size()];
+        double[] c3_arr = new double[c3.size()];
+        double[] c4_arr = new double[c4.size()];
+        double[] c5_arr = new double[c5.size()];
+        double[] c6_arr = new double[c6.size()];
+        double[] c7_arr = new double[c7.size()];
+        double[] c8_arr = new double[c8.size()];
+        double[] c9_arr = new double[c9.size()];
+        double[] c10_arr = new double[c10.size()];
+        double[] c11_arr = new double[c11.size()];
+        double[] c12_arr = new double[c12.size()];
+        double[] c13_arr = new double[c13.size()];
+        double[] c14_arr = new double[c14.size()];
+
+        for (int i = 0; i < c1.size(); i++) {
+            c1_arr[i] = c1.get(i);                // java 1.5+ style (outboxing)
+			c2_arr[i] = c2.get(i);
+			c3_arr[i] = c3.get(i); 
+			c4_arr[i] = c4.get(i); 
+			c5_arr[i] = c5.get(i); 
+			c6_arr[i] = c6.get(i); 
+			c7_arr[i] = c7.get(i); 
+			c8_arr[i] = c8.get(i); 
+			c9_arr[i] = c9.get(i); 
+			c10_arr[i] = c10.get(i); 
+			c11_arr[i] = c11.get(i); 
+			c12_arr[i] = c12.get(i); 
+			c13_arr[i] = c13.get(i); 
+			c14_arr[i] = c14.get(i); 
+        }
+		
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c1_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c1_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c2_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c2_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c3_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c3_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c4_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c4_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c5_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c5_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c6_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c6_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c7_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c7_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c8_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c8_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c9_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c9_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c10_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c10_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c11_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c11_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c12_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c12_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c13_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c13_arr.length]));
+		timestap_values_list.clear();
+
+		timestap_values_list.add(ts_arr);
+		timestap_values_list.add(c14_arr);
+		eeg_channels_values.add(timestap_values_list.toArray(new double[2][c14_arr.length]));
+		timestap_values_list.clear();
+		// close cursor
+		cursor.close();		
+		
+		// cast from dynamic array to standard array
+		return eeg_channels_values.toArray(
+			new double[eeg_channels_values.size()][timestap_values_list.size()][c1_arr.length]);
+	}
 }
 
