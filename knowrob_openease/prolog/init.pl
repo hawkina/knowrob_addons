@@ -35,12 +35,13 @@
 :- register_ros_package(comp_temporal).
 :- register_ros_package(knowrob_vis).
 :- register_ros_package(knowrob_cram).
+:- register_ros_package(knowrob_srdl).
 
 :- register_ros_package(knowrob_openease).
 :- use_module(library('openease_video')).
 :- use_module(library('openease_tasktree')).
-:- use_module(library('openease_sherpa')).
 :- use_module(library('teaching')).
+:- use_module(library('editor')).
 
 %Extended ontology
 %:- owl_parser:owl_parse('package://knowrob_saphari/owl/saphari.owl').
